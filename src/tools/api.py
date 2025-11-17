@@ -19,6 +19,12 @@ from src.data.models import (
     CompanyFactsResponse,
 )
 
+# 多API支持
+from src.utils.ticker_classifier import TickerClassifier, AssetType
+from src.utils.api_router import api_router
+from src.adapters.akshare_adapter import AKShareAdapter
+from src.adapters.yfinance_adapter import YFinanceAdapter
+
 # Global cache instance
 _cache = get_cache()
 
@@ -58,10 +64,72 @@ def _make_api_request(url: str, headers: dict, method: str = "GET", json_data: d
 
 
 def get_prices(ticker: str, start_date: str, end_date: str, api_key: str = None) -> list[Price]:
-    """Fetch price data from cache or API."""
-    # Create a cache key that includes all parameters to ensure exact matches
+    """
+    智能获取价格数据，支持多种资产类型
+
+    Args:
+        ticker: 资产ticker（支持美股、A股、加密货币）
+        start_date: 开始日期
+        end_date: 结束日期
+        api_key: API密钥（用于FinancialDatasets）
+
+    Returns:
+        list[Price]: 价格数据列表
+    """
+    # 创建包含所有参数的缓存键
     cache_key = f"{ticker}_{start_date}_{end_date}"
-    
+
+    # 检查缓存
+    if cached_data := _cache.get_prices(cache_key):
+        return [Price(**price) for price in cached_data]
+
+    # 识别资产类型
+    asset_type, normalized_ticker = TickerClassifier.classify(ticker)
+
+    try:
+        # 使用智能路由获取数据
+        prices = api_router.route_request(
+            function_name="get_prices",
+            ticker=ticker,
+            start_date=start_date,
+            end_date=end_date,
+            api_key=api_key
+        )
+
+        if not prices:
+            return []
+
+        # 缓存结果
+        _cache.set_prices(cache_key, [p.model_dump() for p in prices])
+        return prices
+
+    except Exception as e:
+        # 对于美股类型，如果智能路由失败，尝试使用原有逻辑
+        if asset_type == AssetType.US_STOCK:
+            print(f"智能路由失败，尝试使用原有API获取 {ticker}: {e}")
+            return get_prices_original(ticker, start_date, end_date, api_key)
+
+        # 对于其他类型，记录错误并重新抛出
+        print(f"获取价格数据失败 {ticker} (类型: {asset_type.value}): {e}")
+        raise
+
+
+def get_prices_original(ticker: str, start_date: str, end_date: str, api_key: str = None) -> list[Price]:
+    """
+    原有的价格获取函数，作为降级方案
+
+    Args:
+        ticker: 资产ticker（仅支持FinancialDatasets覆盖的资产）
+        start_date: 开始日期
+        end_date: 结束日期
+        api_key: API密钥
+
+    Returns:
+        list[Price]: 价格数据列表
+    """
+    # Create a cache key that includes all parameters to ensure exact matches
+    cache_key = f"{ticker}_{start_date}_{end_date}_original"
+
     # Check cache first - simple exact match
     if cached_data := _cache.get_prices(cache_key):
         return [Price(**price) for price in cached_data]
@@ -96,10 +164,71 @@ def get_financial_metrics(
     limit: int = 10,
     api_key: str = None,
 ) -> list[FinancialMetrics]:
-    """Fetch financial metrics from cache or API."""
-    # Create a cache key that includes all parameters to ensure exact matches
+    """
+    智能获取财务指标数据，支持多种资产类型
+
+    Args:
+        ticker: 资产ticker（支持美股、A股、加密货币）
+        end_date: 结束日期
+        period: 报告期
+        limit: 返回数量限制
+        api_key: API密钥
+
+    Returns:
+        list[FinancialMetrics]: 财务指标数据列表
+    """
+    # 创建缓存键
     cache_key = f"{ticker}_{period}_{end_date}_{limit}"
-    
+
+    # 检查缓存
+    if cached_data := _cache.get_financial_metrics(cache_key):
+        return [FinancialMetrics(**metric) for metric in cached_data]
+
+    # 识别资产类型
+    asset_type, normalized_ticker = TickerClassifier.classify(ticker)
+
+    try:
+        # 使用智能路由获取数据
+        metrics = api_router.route_request(
+            function_name="get_financial_metrics",
+            ticker=ticker,
+            end_date=end_date,
+            period=period,
+            limit=limit,
+            api_key=api_key
+        )
+
+        if not metrics:
+            return []
+
+        # 缓存结果
+        _cache.set_financial_metrics(cache_key, [m.model_dump() for m in metrics])
+        return metrics
+
+    except Exception as e:
+        # 对于美股类型，如果智能路由失败，尝试使用原有逻辑
+        if asset_type == AssetType.US_STOCK:
+            print(f"智能路由失败，尝试使用原有API获取财务指标 {ticker}: {e}")
+            return get_financial_metrics_original(ticker, end_date, period, limit, api_key)
+
+        # 对于其他类型，记录错误并重新抛出
+        print(f"获取财务指标失败 {ticker} (类型: {asset_type.value}): {e}")
+        raise
+
+
+def get_financial_metrics_original(
+    ticker: str,
+    end_date: str,
+    period: str = "ttm",
+    limit: int = 10,
+    api_key: str = None,
+) -> list[FinancialMetrics]:
+    """
+    原有的财务指标获取函数，作为降级方案
+    """
+    # Create a cache key that includes all parameters to ensure exact matches
+    cache_key = f"{ticker}_{period}_{end_date}_{limit}_original"
+
     # Check cache first - simple exact match
     if cached_data := _cache.get_financial_metrics(cache_key):
         return [FinancialMetrics(**metric) for metric in cached_data]

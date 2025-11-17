@@ -8,6 +8,7 @@ class Price(BaseModel):
     low: float
     volume: int
     time: str
+    symbol: str
 
 
 class PriceResponse(BaseModel):
