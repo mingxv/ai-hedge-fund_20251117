@@ -8,7 +8,14 @@ from langchain_xai import ChatXAI
 from langchain_openai import ChatOpenAI, AzureChatOpenAI
 from langchain_openai import ChatOpenAI
 from langchain_gigachat import GigaChat
-from langchain_ollama import ChatOllama
+
+# Ollama 是可选依赖
+try:
+    from langchain_ollama import ChatOllama
+    OLLAMA_AVAILABLE = True
+except ImportError:
+    OLLAMA_AVAILABLE = False
+    ChatOllama = None
 from enum import Enum
 from pydantic import BaseModel
 from typing import Tuple, List

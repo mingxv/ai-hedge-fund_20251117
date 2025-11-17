@@ -44,7 +44,11 @@ class TickerClassifier:
         original_ticker = ticker.strip()
         ticker = original_ticker.upper()
 
-        # 1. 加密货币：CRYPTO.BTC, CRYPTO.ETH 格式
+        # 1. 常见加密货币符号（直接识别）
+        if ticker in cls.COMMON_CRYPTO_SYMBOLS:
+            return AssetType.CRYPTO, ticker
+
+        # 2. 加密货币：CRYPTO.BTC, CRYPTO.ETH 格式
         if ticker.startswith('CRYPTO.'):
             symbol = ticker[7:]  # 移除'CRYPTO.'前缀（注意是7个字符）
             if cls._is_valid_crypto_symbol(symbol):

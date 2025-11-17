@@ -4,7 +4,9 @@
       "Bash(find:*)",
       "Bash(python:*)",
       "Bash(poetry install:*)",
-      "Bash(poetry run python:*)"
+      "Bash(poetry run python:*)",
+      "Bash(poetry add:*)",
+      "Bash(timeout:*)"
     ],
     "deny": [],
     "ask": []

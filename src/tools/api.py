@@ -264,8 +264,17 @@ def search_line_items(
     limit: int = 10,
     api_key: str = None,
 ) -> list[LineItem]:
-    """Fetch line items from API."""
-    # If not in cache or insufficient data, fetch from API
+    """Fetch line items from API with multi-API routing support."""
+
+    # 首先识别资产类型
+    asset_type, normalized_ticker = TickerClassifier.classify(ticker)
+
+    # 对于非美股资产，返回空列表（因为A股和加密货币没有传统财务指标数据）
+    if asset_type != AssetType.US_STOCK:
+        print(f"注意: {ticker} ({asset_type.value}) 不支持传统财务指标数据，返回空列表")
+        return []
+
+    # 只有美股才使用 Financial Datasets API
     headers = {}
     financial_api_key = api_key or os.environ.get("FINANCIAL_DATASETS_API_KEY")
     if financial_api_key:
@@ -274,7 +283,7 @@ def search_line_items(
     url = "https://api.financialdatasets.ai/financials/search/line-items"
 
     body = {
-        "tickers": [ticker],
+        "tickers": [normalized_ticker],
         "line_items": line_items,
         "end_date": end_date,
         "period": period,
