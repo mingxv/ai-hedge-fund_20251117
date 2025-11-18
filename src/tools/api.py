@@ -269,12 +269,34 @@ def search_line_items(
     # 首先识别资产类型
     asset_type, normalized_ticker = TickerClassifier.classify(ticker)
 
-    # 对于非美股资产，返回空列表（因为A股和加密货币没有传统财务指标数据）
-    if asset_type != AssetType.US_STOCK:
-        print(f"注意: {ticker} ({asset_type.value}) 不支持传统财务指标数据，返回空列表")
+    # 美股使用 Financial Datasets API 获取传统财务指标数据
+    if asset_type == AssetType.US_STOCK:
+        return _search_us_stock_line_items(normalized_ticker, line_items, end_date, period, limit, api_key)
+
+    # A股使用 AKShare 获取财务指标数据
+    elif asset_type == AssetType.A_STOCK:
+        return _search_a_stock_line_items(normalized_ticker, line_items, end_date, limit)
+
+    # 加密货币没有传统财务指标数据，返回空列表并给出明确说明
+    elif asset_type == AssetType.CRYPTO:
+        print(f"注意: {ticker} 是加密货币，没有传统财务指标数据（如收入、利润等）")
         return []
 
-    # 只有美股才使用 Financial Datasets API
+    # 其他资产类型暂不支持财务指标数据
+    else:
+        print(f"注意: {ticker} ({asset_type.value}) 暂不支持财务指标数据查询")
+        return []
+
+
+def _search_us_stock_line_items(
+    ticker: str,
+    line_items: list[str],
+    end_date: str,
+    period: str = "ttm",
+    limit: int = 10,
+    api_key: str = None,
+) -> list[LineItem]:
+    """获取美股的传统财务指标数据"""
     headers = {}
     financial_api_key = api_key or os.environ.get("FINANCIAL_DATASETS_API_KEY")
     if financial_api_key:
@@ -283,7 +305,7 @@ def search_line_items(
     url = "https://api.financialdatasets.ai/financials/search/line-items"
 
     body = {
-        "tickers": [normalized_ticker],
+        "tickers": [ticker],
         "line_items": line_items,
         "end_date": end_date,
         "period": period,
@@ -300,6 +322,91 @@ def search_line_items(
 
     # Cache the results
     return search_results[:limit]
+
+
+def _search_a_stock_line_items(
+    ticker: str,
+    line_items: list[str],
+    end_date: str,
+    limit: int = 10
+) -> list[LineItem]:
+    """获取A股的财务指标数据，转换为LineItem格式"""
+    try:
+        import akshare as ak
+
+        # 移除A股后缀，获取纯代码
+        a_stock_code = ticker
+        for suffix in ['.SZ', '.SS', '.SH', '.BJ']:
+            if ticker.endswith(suffix):
+                a_stock_code = ticker[:-3]
+                break
+
+        # 使用已验证可用的 stock_financial_abstract 接口
+        df = ak.stock_financial_abstract(symbol=a_stock_code)
+
+        if df.empty:
+            print(f"注意: {ticker} 暂无财务指标数据")
+            return []
+
+        # 将常见的A股财务指标映射到标准化的line items
+        line_item_mapping = {
+            'revenue': ['营业总收入'],
+            'net_income': ['归母净利润'],
+            'total_assets': ['资产总计'],
+            'total_liabilities': ['负债合计'],
+            'current_assets': ['流动资产合计'],
+            'current_liabilities': ['流动负债合计'],
+            'book_value': ['股东权益合计', '归属于母公司所有者权益合计'],
+            'book_value_per_share': ['每股净资产'],
+            'operating_income': ['营业利润'],
+            'eps': ['基本每股收益'],
+            'earnings_per_share': ['基本每股收益'],  # 添加eps别名，兼容代理代码
+            'roe': ['净资产收益率'],
+            'roa': ['总资产收益率'],
+            'gross_profit': ['营业毛利'],
+            'operating_cash_flow': ['经营活动产生的现金流量净额'],
+            'free_cash_flow': ['自由现金流量'],
+            'dividends_and_other_cash_distributions': ['分红派息'],
+            'outstanding_shares': ['总股本']
+        }
+
+        result = []
+        for requested_item in line_items:
+            # 查找对应的A股财务指标
+            if requested_item in line_item_mapping:
+                chinese_names = line_item_mapping[requested_item]
+                value = None
+
+                for chinese_name in chinese_names:
+                    # 在数据中查找对应的指标行
+                    matching_row = df[df['指标'] == chinese_name]
+                    if not matching_row.empty:
+                        # 获取最新一期的数据（第3列是最新数据）
+                        value = matching_row.iloc[0, 2]  # 第3列（索引2）是最新数据
+                        break
+
+                if value is not None and pd.notna(value) and value != 0:
+                    # 创建LineItem对象
+                    line_item = LineItem(
+                        ticker=ticker,
+                        report_period="quarterly",  # AKShare通常是季度数据
+                        period="quarterly",
+                        currency="CNY",
+                        name=requested_item,
+                        value=float(value)
+                    )
+                    result.append(line_item)
+
+        if result:
+            print(f"✅ 成功获取 {ticker} 的 {len(result)} 项财务指标数据")
+        else:
+            print(f"⚠️ {ticker} 暂无匹配的财务指标数据")
+
+        return result[:limit]
+
+    except Exception as e:
+        print(f"⚠️ 获取A股 {ticker} 财务指标数据失败: {e}")
+        return []
 
 
 def get_insider_trades(
@@ -431,7 +538,26 @@ def get_market_cap(
     end_date: str,
     api_key: str = None,
 ) -> float | None:
-    """Fetch market cap from the API."""
+    """Fetch market cap from the API with multi-API routing support."""
+
+    # 首先识别资产类型
+    asset_type, normalized_ticker = TickerClassifier.classify(ticker)
+
+    # 对于非美股资产，使用路由系统获取财务指标
+    if asset_type != AssetType.US_STOCK:
+        try:
+            # 使用路由系统获取财务指标
+            financial_metrics = api_router.route_request('get_financial_metrics', normalized_ticker, end_date=end_date)
+            if financial_metrics:
+                return financial_metrics[0].market_cap
+            else:
+                print(f"注意: {ticker} ({asset_type.value}) 无法获取市值数据")
+                return None
+        except Exception as e:
+            print(f"注意: {ticker} ({asset_type.value}) 获取市值数据失败: {e}")
+            return None
+
+    # 只有美股才使用 Financial Datasets API
     # Check if end_date is today
     if end_date == datetime.datetime.now().strftime("%Y-%m-%d"):
         # Get the market cap from company facts API
@@ -440,7 +566,7 @@ def get_market_cap(
         if financial_api_key:
             headers["X-API-KEY"] = financial_api_key
 
-        url = f"https://api.financialdatasets.ai/company/facts/?ticker={ticker}"
+        url = f"https://api.financialdatasets.ai/company/facts/?ticker={normalized_ticker}"
         response = _make_api_request(url, headers)
         if response.status_code != 200:
             print(f"Error fetching company facts: {ticker} - {response.status_code}")
